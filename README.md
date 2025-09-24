@@ -11,19 +11,27 @@ PeerLend enables trustless Bitcoin lending through smart contracts on the Stacks
 - 💰 **Non-custodial lending** - Users maintain control of their funds
 - 🔒 **Collateralized loans** - All loans require STX collateral 
 - ⚡ **Automated liquidation** - Expired loans trigger automatic collateral liquidation
+- 🔄 **Loan refinancing** - Borrowers can refinance active loans with better terms from competing lenders
 - 📊 **Configurable parameters** - Adjustable interest rates, collateral ratios, and loan durations
 - 💸 **Platform fees** - Built-in fee mechanism for protocol sustainability
 - 🔍 **Full transparency** - All loan data stored on-chain and publicly accessible
 
 ## 🏗️ Contract Functions
 
-### 📈 Core Lending Functions
+### 📊 Core Lending Functions
 
 - `create-loan-request(amount, collateral, interest-rate, duration)` - Create a new loan request
 - `fund-loan(loan-id)` - Fund an existing loan request
 - `repay-loan(loan-id)` - Repay an active loan with interest
 - `liquidate-loan(loan-id)` - Liquidate an expired loan
 - `cancel-loan-request(loan-id)` - Cancel a pending loan request
+
+### 🔄 Loan Refinancing Functions
+
+- `create-refinance-request(loan-id, requested-rate, requested-duration)` - Request refinancing for an active loan
+- `submit-refinance-offer(refinance-id, offered-rate, offered-duration)` - Submit a competitive refinancing offer
+- `accept-refinance-offer(refinance-id, chosen-lender)` - Accept a refinancing offer and execute the transfer
+- `cancel-refinance-request(refinance-id)` - Cancel a pending refinancing request
 
 ### 💳 Balance Management
 
@@ -38,6 +46,9 @@ PeerLend enables trustless Bitcoin lending through smart contracts on the Stacks
 - `get-user-balance(user)` - Check user's lending balance
 - `get-user-collateral(user)` - Check user's collateral balance
 - `calculate-total-repayment(loan-id)` - Calculate total repayment amount
+- `get-refinance-request(refinance-id)` - Get refinancing request details
+- `get-refinance-offer(refinance-id, lender)` - Get specific refinancing offer
+- `get-next-refinance-id()` - Get next available refinancing request ID
 
 ## 📖 Usage Guide
 
@@ -74,9 +85,39 @@ PeerLend enables trustless Bitcoin lending through smart contracts on the Stacks
    (contract-call? .PeerLend fund-loan u1) ;; Fund loan ID 1
    ```
 
-3. **Liquidate Expired Loan** (if applicable)
+3. **Submit Refinancing Offer**
+   ```clarity
+   (contract-call? .PeerLend submit-refinance-offer 
+     u1       ;; refinance request ID
+     u800     ;; 8% interest rate (lower than original)
+     u1200)   ;; 1200 blocks duration
+   ```
+
+4. **Liquidate Expired Loan** (if applicable)
    ```clarity
    (contract-call? .PeerLend liquidate-loan u1) ;; Liquidate loan ID 1
+   ```
+
+### For Refinancing 🔄
+
+1. **Create Refinancing Request** (borrower)
+   ```clarity
+   (contract-call? .PeerLend create-refinance-request
+     u1       ;; loan ID to refinance
+     u800     ;; desired 8% interest rate  
+     u1500)   ;; desired 1500 blocks duration
+   ```
+
+2. **Accept Refinancing Offer** (borrower)
+   ```clarity
+   (contract-call? .PeerLend accept-refinance-offer
+     u1                     ;; refinance request ID
+     'ST1REFINANCE-LENDER)  ;; chosen lender's address
+   ```
+
+3. **Cancel Refinancing Request** (borrower)
+   ```clarity
+   (contract-call? .PeerLend cancel-refinance-request u1) ;; Cancel refinance ID 1
    ```
 
 ## ⚙️ Configuration
@@ -104,11 +145,17 @@ Contract owner can adjust:
 
 ## 📊 Loan States
 
+### Core Loan States
 - `pending` - Loan request created, awaiting funding
 - `active` - Loan funded, repayment period active
 - `repaid` - Loan successfully repaid by borrower
 - `liquidated` - Loan expired and collateral seized
 - `cancelled` - Loan request cancelled by borrower
+
+### Refinancing States
+- `open` - Refinancing request created, accepting offers
+- `executed` - Refinancing completed successfully
+- `cancelled` - Refinancing request cancelled by borrower
 
 ## 🧮 Interest Calculation
 

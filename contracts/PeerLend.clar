@@ -302,3 +302,135 @@
     none
   )
 )
+
+(define-constant err-refinance-not-found (err u109))
+(define-constant err-invalid-refinance-status (err u110))
+(define-constant err-offer-exists (err u111))
+(define-constant err-offer-not-found (err u112))
+(define-constant err-loan-not-refinanceable (err u113))
+
+(define-data-var next-refinance-id uint u1)
+
+(define-map refinance-requests
+  { refinance-id: uint }
+  {
+    loan-id: uint,
+    borrower: principal,
+    original-lender: principal,
+    original-amount: uint,
+    requested-rate: uint,
+    requested-duration: uint,
+    created-at: uint,
+    status: (string-ascii 20)
+  }
+)
+
+(define-map refinance-offers
+  { refinance-id: uint, lender: principal }
+  {
+    offered-rate: uint,
+    offered-duration: uint,
+    offered-at: uint
+  }
+)
+
+(define-private (can-refinance-loan (loan-id uint))
+  (match (map-get? loans { loan-id: loan-id })
+    loan-data
+    (and (is-eq (get status loan-data) "active") (not (is-loan-expired loan-id)) (is-some (get lender loan-data)) (is-some (get funded-at loan-data)))
+    false
+  )
+)
+
+(define-public (create-refinance-request (loan-id uint) (requested-rate uint) (requested-duration uint))
+  (match (map-get? loans { loan-id: loan-id })
+    loan-data
+    (let ((refinance-id (var-get next-refinance-id)))
+      (asserts! (is-eq tx-sender (get borrower loan-data)) err-unauthorized)
+      (asserts! (can-refinance-loan loan-id) err-loan-not-refinanceable)
+      (asserts! (and (> requested-rate u0) (> requested-duration u0)) err-invalid-amount)
+      (match (get lender loan-data)
+        original-lender
+        (begin
+          (map-set refinance-requests { refinance-id: refinance-id }
+            { loan-id: loan-id, borrower: tx-sender, original-lender: original-lender, original-amount: (get amount loan-data),
+              requested-rate: requested-rate, requested-duration: requested-duration, created-at: stacks-block-height, status: "open" })
+          (var-set next-refinance-id (+ refinance-id u1))
+          (ok refinance-id)
+        )
+        err-not-found
+      )
+    )
+    err-not-found
+  )
+)
+
+(define-public (submit-refinance-offer (refinance-id uint) (offered-rate uint) (offered-duration uint))
+  (match (map-get? refinance-requests { refinance-id: refinance-id })
+    refinance-data
+    (let ((lender-balance (get-balance tx-sender)) (loan-amount (get original-amount refinance-data)))
+      (asserts! (is-eq (get status refinance-data) "open") err-invalid-refinance-status)
+      (asserts! (not (or (is-eq tx-sender (get borrower refinance-data)) (is-eq tx-sender (get original-lender refinance-data)))) err-unauthorized)
+      (asserts! (and (>= lender-balance loan-amount) (> offered-rate u0) (> offered-duration u0)) err-insufficient-balance)
+      (asserts! (is-none (map-get? refinance-offers { refinance-id: refinance-id, lender: tx-sender })) err-offer-exists)
+      (map-set refinance-offers { refinance-id: refinance-id, lender: tx-sender }
+        { offered-rate: offered-rate, offered-duration: offered-duration, offered-at: stacks-block-height })
+      (ok true)
+    )
+    err-refinance-not-found
+  )
+)
+
+(define-public (accept-refinance-offer (refinance-id uint) (chosen-lender principal))
+  (match (map-get? refinance-requests { refinance-id: refinance-id })
+    refinance-data
+    (match (map-get? refinance-offers { refinance-id: refinance-id, lender: chosen-lender })
+      offer-data
+      (let ((loan-id (get loan-id refinance-data)) (original-lender (get original-lender refinance-data))
+            (loan-amount (get original-amount refinance-data)) (new-rate (get offered-rate offer-data))
+            (new-duration (get offered-duration offer-data)) (new-lender-balance (get-balance chosen-lender)))
+        (asserts! (is-eq tx-sender (get borrower refinance-data)) err-unauthorized)
+        (asserts! (and (is-eq (get status refinance-data) "open") (can-refinance-loan loan-id) (>= new-lender-balance loan-amount)) err-invalid-refinance-status)
+        (match (map-get? loans { loan-id: loan-id })
+          current-loan
+          (let ((accrued-interest (calculate-interest (get amount current-loan) (get interest-rate current-loan)
+                  (- stacks-block-height (unwrap-panic (get funded-at current-loan))))) (total-payoff (+ loan-amount accrued-interest)))
+            (try! (stx-transfer? total-payoff chosen-lender original-lender))
+            (set-balance chosen-lender (- new-lender-balance loan-amount))
+            (map-set loans { loan-id: loan-id }
+              (merge current-loan { lender: (some chosen-lender), interest-rate: new-rate, duration: new-duration, funded-at: (some stacks-block-height) }))
+            (map-set refinance-requests { refinance-id: refinance-id } (merge refinance-data { status: "executed" }))
+            (ok true)
+          )
+          err-not-found
+        )
+      )
+      err-offer-not-found
+    )
+    err-refinance-not-found
+  )
+)
+
+(define-public (cancel-refinance-request (refinance-id uint))
+  (match (map-get? refinance-requests { refinance-id: refinance-id })
+    refinance-data
+    (begin
+      (asserts! (and (is-eq tx-sender (get borrower refinance-data)) (is-eq (get status refinance-data) "open")) err-unauthorized)
+      (map-set refinance-requests { refinance-id: refinance-id } (merge refinance-data { status: "cancelled" }))
+      (ok true)
+    )
+    err-refinance-not-found
+  )
+)
+
+(define-read-only (get-refinance-request (refinance-id uint))
+  (map-get? refinance-requests { refinance-id: refinance-id })
+)
+
+(define-read-only (get-refinance-offer (refinance-id uint) (lender principal))
+  (map-get? refinance-offers { refinance-id: refinance-id, lender: lender })
+)
+
+(define-read-only (get-next-refinance-id)
+  (var-get next-refinance-id)
+)
