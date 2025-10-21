@@ -40,6 +40,16 @@
   { amount: uint }
 )
 
+(define-map lender-reputation
+  principal
+  {
+    funded-loans-count: uint,
+    successful-liquidations: uint,
+    total-volume-funded: uint,
+    reputation-score: uint
+  }
+)
+
 (define-private (get-balance (user principal))
   (default-to u0 (get balance (map-get? user-balances { user: user })))
 )
@@ -73,6 +83,62 @@
         (> stacks-block-height expiry-time))
       false)
     false
+  )
+)
+
+(define-private (calculate-reputation-score (funded uint) (liquidations uint) (volume uint))
+  (let
+    (
+      (funded-score (if (>= funded u10) u40 (* funded u4)))
+      (liquidation-score (if (>= liquidations u5) u30 (* liquidations u6)))
+      (volume-score (if (>= volume u1000000) u30 (/ (* volume u30) u1000000)))
+    )
+    (+ funded-score (+ liquidation-score volume-score))
+  )
+)
+
+(define-private (update-lender-reputation-on-fund (lender principal) (amount uint))
+  (let
+    (
+      (current-rep (default-to
+        {funded-loans-count: u0, successful-liquidations: u0, total-volume-funded: u0, reputation-score: u0}
+        (map-get? lender-reputation lender)))
+      (new-funded (+ (get funded-loans-count current-rep) u1))
+      (new-volume (+ (get total-volume-funded current-rep) amount))
+      (new-score (calculate-reputation-score
+        new-funded
+        (get successful-liquidations current-rep)
+        new-volume))
+    )
+    (map-set lender-reputation lender
+      {
+        funded-loans-count: new-funded,
+        successful-liquidations: (get successful-liquidations current-rep),
+        total-volume-funded: new-volume,
+        reputation-score: new-score
+      })
+  )
+)
+
+(define-private (update-lender-reputation-on-liquidate (lender principal))
+  (let
+    (
+      (current-rep (default-to
+        {funded-loans-count: u0, successful-liquidations: u0, total-volume-funded: u0, reputation-score: u0}
+        (map-get? lender-reputation lender)))
+      (new-liquidations (+ (get successful-liquidations current-rep) u1))
+      (new-score (calculate-reputation-score
+        (get funded-loans-count current-rep)
+        new-liquidations
+        (get total-volume-funded current-rep)))
+    )
+    (map-set lender-reputation lender
+      {
+        funded-loans-count: (get funded-loans-count current-rep),
+        successful-liquidations: new-liquidations,
+        total-volume-funded: (get total-volume-funded current-rep),
+        reputation-score: new-score
+      })
   )
 )
 
@@ -162,6 +228,7 @@
           status: "active"
         })
       )
+      (update-lender-reputation-on-fund tx-sender loan-amount)
       (ok true)
     )
     err-not-found
@@ -223,6 +290,7 @@
               status: "liquidated"
             })
           )
+          (update-lender-reputation-on-liquidate tx-sender)
           (ok true)
         )
         err-unauthorized
@@ -433,4 +501,10 @@
 
 (define-read-only (get-next-refinance-id)
   (var-get next-refinance-id)
+)
+
+(define-read-only (get-lender-reputation (lender principal))
+  (ok (default-to
+    {funded-loans-count: u0, successful-liquidations: u0, total-volume-funded: u0, reputation-score: u0}
+    (map-get? lender-reputation lender)))
 )
